@@ -18,6 +18,7 @@ library
     GADTs
     TypeFamilies
     AllowAmbiguousTypes
+    UndecidableInstances
   ghc-options:       -Wall -Wno-name-shadowing
   build-depends:
     base >= 4.16 && < 5

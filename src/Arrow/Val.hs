@@ -11,27 +11,30 @@ import Arrow.FFI
 import Foreign.ForeignPtr (ForeignPtr, withForeignPtr)
 import Foreign.Ptr        (Ptr)
 import Foreign.C.String   (peekCString)
+import System.IO.Unsafe   (unsafeDupablePerformIO)
 
 type Val :: Dtype -> Type
 data Val d where
   MkVal :: ForeignPtr RawVal -> Val d
 
-isValid :: Val d -> IO Bool
-isValid (MkVal fp) = withForeignPtr fp $ \p -> (/= 0) <$> rawValIsValid p
+pu :: IO a -> a
+pu = unsafeDupablePerformIO
 
-toString :: Val d -> IO String
-toString (MkVal fp) = withForeignPtr fp $ \p -> do
+isValid :: Val d -> Bool
+isValid (MkVal fp) = pu $ withForeignPtr fp $ \p -> (/= 0) <$> rawValIsValid p
+
+toString :: Val d -> String
+toString (MkVal fp) = pu $ withForeignPtr fp $ \p -> do
     cs <- rawValToString p
     s <- peekCString cs
     rawStringFree cs
     pure s
 
--- | Extract the host-type value from a scalar. Returns Nothing if the scalar is null.
 class ExtractVal (d :: Dtype) where
-  extract :: Val d -> IO (Maybe (HostType d))
+  extract :: Val d -> Maybe (HostType d)
 
-extractWith :: (Ptr RawVal -> IO a) -> Val d -> IO (Maybe a)
-extractWith rawGet (MkVal fp) = withForeignPtr fp $ \p -> do
+extractWith :: (Ptr RawVal -> IO a) -> Val d -> Maybe a
+extractWith rawGet (MkVal fp) = pu $ withForeignPtr fp $ \p -> do
     v <- rawValIsValid p
     if v == 0 then pure Nothing else Just <$> rawGet p
 
