@@ -1,0 +1,38 @@
+cabal-version: 3.0
+name:          hask-arrow
+version:       0.1.0.0
+synopsis:      Type-safe Haskell bindings to Apache Arrow
+build-type:    Simple
+
+library
+  exposed-modules:
+    Arrow.Dtype
+    Arrow.FFI
+    Arrow.Col
+    Arrow.Val
+    Arrow.Apl
+  hs-source-dirs:   src
+  default-language:  GHC2021
+  default-extensions:
+    DataKinds
+    GADTs
+    TypeFamilies
+    AllowAmbiguousTypes
+  ghc-options:       -Wall -Wno-name-shadowing
+  build-depends:
+    base >= 4.16 && < 5
+  cxx-sources:       ffi/arrow_hs.cpp
+  cxx-options:       -std=c++17 -O2
+  extra-libraries:   arrow_compute arrow stdc++
+
+test-suite smoke
+  type:              exitcode-stdio-1.0
+  main-is:           Main.hs
+  hs-source-dirs:    test
+  default-language:  GHC2021
+  default-extensions:
+    DataKinds
+  ghc-options:       -Wall
+  build-depends:
+    base >= 4.16 && < 5,
+    hask-arrow
