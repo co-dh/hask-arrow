@@ -104,4 +104,38 @@ main = do
     assert "P2D [2] child"      (Just 1) (C.get dep 2)
     assert "P2D [3] grandchild" (Just 2) (C.get dep 3)
 
+    putStrLn "\n-- rot / xorScan --"
+    let ri = C.mk @'Int64 [Just 1, Just 2, Just 3, Just 4, Just 5]
+        rL = Apl.rot 1 ri      -- left by 1: [2,3,4,5,1]
+        rR = Apl.rot (-1) ri   -- right by 1: [5,1,2,3,4]
+    assert "rot left  [0]" (Just 2) (C.get rL 0)
+    assert "rot left  [4]" (Just 1) (C.get rL 4)
+    assert "rot right [0]" (Just 5) (C.get rR 0)
+    assert "rot right [4]" (Just 4) (C.get rR 4)
+    let parityIn = C.mk @'Bool [Just True, Just False, Just True, Just True, Just False]
+        parity   = Apl.xorScan parityIn  -- [T,T,F,T,T]
+    assert "xorScan [0]" (Just True)  (C.get parity 0)
+    assert "xorScan [1]" (Just True)  (C.get parity 1)
+    assert "xorScan [2]" (Just False) (C.get parity 2)
+    assert "xorScan [3]" (Just True)  (C.get parity 3)
+    assert "xorScan [4]" (Just True)  (C.get parity 4)
+
+    putStrLn "\n-- PS.apl:85  pairFind ('⍺⍺'⍷x) --"
+    -- x = "a⍺⍺b⍺c" → '⍺⍺' only matches at position 1
+    let pc = C.mk @'Int64 (map (Just . fromIntegral . ord) "a⍺⍺b⍺c")
+        pf = Apl.pairFind (Apl.cc '⍺') (Apl.cc '⍺') pc
+    assert "pairFind [0]" (Just False) (C.get pf 0)
+    assert "pairFind [1]" (Just True)  (C.get pf 1)
+    assert "pairFind [2]" (Just False) (C.get pf 2)
+    assert "pairFind [5]" (Just False) (C.get pf 5)
+
+    putStrLn "\n-- PS.apl:108  tm←(d=0)∧'∇'=x --"
+    let tmD = C.mk @'Int64 [Just 0, Just 0, Just 1, Just 0]
+        tmX = C.mk @'Int64 [Just (Apl.cc '∇'), Just 65, Just (Apl.cc '∇'), Just (Apl.cc '∇')]
+        tmR = Apl.tradFnMask tmD tmX
+    assert "tradFnMask [0]" (Just True)  (C.get tmR 0)   -- d=0, x=∇
+    assert "tradFnMask [1]" (Just False) (C.get tmR 1)   -- x≠∇
+    assert "tradFnMask [2]" (Just False) (C.get tmR 2)   -- d≠0
+    assert "tradFnMask [3]" (Just True)  (C.get tmR 3)   -- d=0, x=∇
+
     putStrLn "\nAll tests passed."
