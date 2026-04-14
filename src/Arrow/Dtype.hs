@@ -5,11 +5,15 @@ module Arrow.Dtype
   , IsOrd
   , IsIntegral
   , IsFloat
+  , dtypeFromCode
+  , dtypeFromCodeOrThrow
   ) where
 
-import Data.Int  (Int8, Int16, Int32, Int64)
-import Data.Word (Word8, Word16, Word32, Word64)
-import Data.Kind (Constraint, Type)
+import Arrow.FFI         (ArrowError(..))
+import Control.Exception (throwIO)
+import Data.Int          (Int8, Int16, Int32, Int64)
+import Data.Word         (Word8, Word16, Word32, Word64)
+import Data.Kind         (Constraint, Type)
 
 data Dtype
   = Bool
@@ -36,7 +40,6 @@ type family HostType (d :: Dtype) :: Type where
   HostType 'Date32  = Int32
   HostType 'Date64  = Int64
 
--- Numeric: arithmetic allowed
 type IsNumeric :: Dtype -> Constraint
 class IsNumeric d
 instance IsNumeric 'Int8
@@ -50,7 +53,6 @@ instance IsNumeric 'UInt64
 instance IsNumeric 'Float32
 instance IsNumeric 'Float64
 
--- Orderable: comparison/sort allowed
 type IsOrd :: Dtype -> Constraint
 class IsOrd d
 instance IsOrd 'Bool
@@ -68,7 +70,6 @@ instance IsOrd 'Utf8
 instance IsOrd 'Date32
 instance IsOrd 'Date64
 
--- Integral: bitwise ops allowed
 type IsIntegral :: Dtype -> Constraint
 class IsIntegral d
 instance IsIntegral 'Int8
@@ -80,8 +81,28 @@ instance IsIntegral 'UInt16
 instance IsIntegral 'UInt32
 instance IsIntegral 'UInt64
 
--- Floating-point
 type IsFloat :: Dtype -> Constraint
 class IsFloat d
 instance IsFloat 'Float32
 instance IsFloat 'Float64
+
+-- Wire codes for FFI — must match arrow_type_to_dtype in ffi/arrow_hs.cpp
+dtypeFromCode :: Word8 -> Maybe Dtype
+dtypeFromCode 0  = Just Bool
+dtypeFromCode 1  = Just Int8
+dtypeFromCode 2  = Just Int16
+dtypeFromCode 3  = Just Int32
+dtypeFromCode 4  = Just Int64
+dtypeFromCode 5  = Just UInt8
+dtypeFromCode 6  = Just UInt16
+dtypeFromCode 7  = Just UInt32
+dtypeFromCode 8  = Just UInt64
+dtypeFromCode 9  = Just Float32
+dtypeFromCode 10 = Just Float64
+dtypeFromCode 11 = Just Utf8
+dtypeFromCode _  = Nothing
+
+dtypeFromCodeOrThrow :: Word8 -> IO Dtype
+dtypeFromCodeOrThrow c = case dtypeFromCode c of
+    Just d  -> pure d
+    Nothing -> throwIO (ArrowError ("unknown dtype code: " ++ show c))
