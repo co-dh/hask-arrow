@@ -4,9 +4,14 @@ import Arrow.Col qualified as C
 import Arrow.Col ((>.))
 import Arrow.Val qualified as V
 import Arrow.Apl qualified as Apl
+import Arrow.Batch qualified as B
+import Arrow.Parquet qualified as Pq
 import Arrow.Dtype (Dtype(..))
+import Control.Monad (when)
 import Data.Char (ord)
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty(..))
+import System.Directory (removeFile, doesFileExist)
 import System.Exit (exitFailure)
 
 assert :: (Eq a, Show a) => String -> a -> a -> IO ()
@@ -137,5 +142,53 @@ main = do
     assert "tradFnMask [1]" (Just False) (C.get tmR 1)   -- x≠∇
     assert "tradFnMask [2]" (Just False) (C.get tmR 2)   -- d≠0
     assert "tradFnMask [3]" (Just True)  (C.get tmR 3)   -- d=0, x=∇
+
+    -- -------------------------------------------------------------------
+    -- RecordBatch + Parquet round-trip
+    -- -------------------------------------------------------------------
+
+    putStrLn "\n-- RecordBatch construction --"
+    let idCol    = C.mk @'Int64   [Just 1, Just 2, Just 3, Just 4]
+        priceCol = C.mk @'Float64 [Just 10.5, Just 20.0, Nothing, Just 40.25]
+        batch1   = B.fromCols [ B.NamedCol "id"    idCol
+                              , B.NamedCol "price" priceCol ]
+    assert "batch rows" 4 (B.numRows batch1)
+    assert "batch cols" 2 (B.numCols batch1)
+    assert "batch col 0 name"  "id"    (B.colName batch1 0)
+    assert "batch col 1 name"  "price" (B.colName batch1 1)
+    assert "batch col 0 dtype" Int64   (B.colDtype batch1 0)
+    assert "batch col 1 dtype" Float64 (B.colDtype batch1 1)
+
+    putStrLn "\n-- Parquet round-trip --"
+    let path = "/tmp/hask-arrow-test.parquet"
+    exists <- doesFileExist path
+    when exists (removeFile path)
+    Pq.writeBatches path (batch1 :| [])
+
+    Pq.withReader path 0 $ \r -> do
+        Pq.numRows  r >>= assert "parquet rows"          (4 :: Int64)
+        Pq.numCols  r >>= assert "parquet cols"          2
+        Pq.colName  r 0 >>= assert "parquet col 0 name"  "id"
+        Pq.colName  r 1 >>= assert "parquet col 1 name"  "price"
+        Pq.colDtype r 0 >>= assert "parquet col 0 dtype" Int64
+        Pq.colDtype r 1 >>= assert "parquet col 1 dtype" Float64
+        -- streaming: foldBatches counts rows without retaining batches
+        Pq.foldBatches r 0 (\acc bch -> pure (acc + B.numRows bch))
+          >>= assert "stream row total" (4 :: Int)
+
+    -- Re-open and pull a single batch to verify column extraction.
+    Pq.withReader path 0 $ \r -> do
+        Just bch <- Pq.nextBatch r
+        assert "rt batch rows" 4 (B.numRows bch)
+        assert "rt batch cols" 2 (B.numCols bch)
+        let idBack    = B.unsafeCol bch 0 :: C.Col 'Int64
+            priceBack = B.unsafeCol bch 1 :: C.Col 'Float64
+        assert "rt id 0"    (Just 1)     (C.get idBack 0)
+        assert "rt id 3"    (Just 4)     (C.get idBack 3)
+        assert "rt price 0" (Just 10.5)  (C.get priceBack 0)
+        assert "rt price 2" Nothing      (C.get priceBack 2)
+        assert "rt price 3" (Just 40.25) (C.get priceBack 3)
+
+    removeFile path
 
     putStrLn "\nAll tests passed."

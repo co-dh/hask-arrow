@@ -1,7 +1,8 @@
 module Arrow.FFI
-  ( RawCol, RawVal
+  ( RawCol, RawVal, RawBatch, RawParquetReader, RawParquetWriter
   , ArrowError(..)
-  , throwIfNull
+  , throwIfNull, throwLastError, checkStatus
+  , pu, peekCStringFree
   -- * Lifecycle
   , rawColFreePtr, rawValFreePtr, rawStringFree
   -- * Construction
@@ -19,12 +20,12 @@ module Arrow.FFI
   , rawGetFloat32, rawGetFloat64
   , rawGetUtf8
   -- * Compute
-  , rawAdd, rawSub, rawMul, rawDiv, rawNeg, rawAbs
+  , rawAdd, rawSub, rawMul, rawDiv, rawNeg, rawAbs, rawSign
   , rawEq, rawNeq, rawLt, rawGt, rawLte, rawGte
   , rawFilter, rawTake, rawFillNull
   , rawUnique, rawDropNull, rawIsNulls, rawIsValids
   , rawSort
-  , rawLogAnd, rawLogOr, rawIfElse
+  , rawLogAnd, rawLogOr, rawLogNot, rawIfElse
   , rawSum, rawMean, rawMin, rawMax, rawProduct
   -- * Array primitives
   , rawIota, rawFillInt64, rawWhere, rawConcat
@@ -36,17 +37,32 @@ module Arrow.FFI
   , rawValGetInt8,  rawValGetInt16,  rawValGetInt32,  rawValGetInt64
   , rawValGetUInt8, rawValGetUInt16, rawValGetUInt32, rawValGetUInt64
   , rawValGetFloat32, rawValGetFloat64
+  -- * RecordBatch
+  , rawBatchFreePtr, rawBatchNumRows, rawBatchNumCols
+  , rawBatchCol, rawBatchColName, rawBatchColType, rawBatchMake
+  -- * Parquet
+  , rawParquetOpen, rawParquetClose
+  , rawParquetNumRows, rawParquetNumCols
+  , rawParquetColName, rawParquetColType
+  , rawParquetNextBatch
+  , rawParquetWriterOpen, rawParquetWriterWrite, rawParquetWriterClose
   ) where
 
 import Control.Exception (Exception, throwIO)
+import Control.Monad     (unless)
 import Data.Int          (Int8, Int16, Int32, Int64)
 import Data.Word         (Word8, Word16, Word32, Word64)
 import Foreign.C.String  (CString, peekCString)
+import Foreign.C.Types   (CInt(..))
 import Foreign.Ptr       (Ptr, FunPtr, nullPtr)
+import System.IO.Unsafe  (unsafeDupablePerformIO)
 
 -- | Opaque C types — never dereferenced from Haskell
 data RawCol
 data RawVal
+data RawBatch
+data RawParquetReader
+data RawParquetWriter
 
 -- | Arrow compute error propagated from the C++ shim
 newtype ArrowError = ArrowError String deriving (Show)
@@ -57,10 +73,29 @@ foreign import ccall "arrow_hs_last_error" rawLastError :: IO CString
 throwIfNull :: IO (Ptr a) -> IO (Ptr a)
 throwIfNull act = do
     p <- act
-    if p == nullPtr then do
-        msg <- peekCString =<< rawLastError
-        throwIO (ArrowError msg)
-    else pure p
+    if p == nullPtr then throwLastError else pure p
+
+-- | Throw the thread-local last error from the C++ shim.
+throwLastError :: IO a
+throwLastError = do
+    msg <- peekCString =<< rawLastError
+    throwIO (ArrowError msg)
+
+checkStatus :: IO CInt -> IO ()
+checkStatus act = act >>= \st -> unless (st == 0) throwLastError
+
+-- | Arrow kernels are referentially transparent (immutable in, new array
+-- out); IO is just FFI ceremony. Wrap computations with this to expose a
+-- pure API — same trick 'bytestring'/'vector' use.
+pu :: IO a -> a
+pu = unsafeDupablePerformIO
+
+-- | Peek a C string allocated by the shim and free it via 'rawStringFree'.
+peekCStringFree :: CString -> IO String
+peekCStringFree cs = do
+    s <- peekCString cs
+    rawStringFree cs
+    pure s
 
 -- ---------------------------------------------------------------------------
 -- Lifecycle
@@ -117,8 +152,9 @@ foreign import ccall "arrow_hs_add" rawAdd :: Ptr RawCol -> Ptr RawCol -> IO (Pt
 foreign import ccall "arrow_hs_sub" rawSub :: Ptr RawCol -> Ptr RawCol -> IO (Ptr RawCol)
 foreign import ccall "arrow_hs_mul" rawMul :: Ptr RawCol -> Ptr RawCol -> IO (Ptr RawCol)
 foreign import ccall "arrow_hs_div" rawDiv :: Ptr RawCol -> Ptr RawCol -> IO (Ptr RawCol)
-foreign import ccall "arrow_hs_neg" rawNeg :: Ptr RawCol -> IO (Ptr RawCol)
-foreign import ccall "arrow_hs_abs" rawAbs :: Ptr RawCol -> IO (Ptr RawCol)
+foreign import ccall "arrow_hs_neg"  rawNeg  :: Ptr RawCol -> IO (Ptr RawCol)
+foreign import ccall "arrow_hs_abs"  rawAbs  :: Ptr RawCol -> IO (Ptr RawCol)
+foreign import ccall "arrow_hs_sign" rawSign :: Ptr RawCol -> IO (Ptr RawCol)
 
 foreign import ccall "arrow_hs_eq"  rawEq  :: Ptr RawCol -> Ptr RawCol -> IO (Ptr RawCol)
 foreign import ccall "arrow_hs_neq" rawNeq :: Ptr RawCol -> Ptr RawCol -> IO (Ptr RawCol)
@@ -139,6 +175,7 @@ foreign import ccall "arrow_hs_sort"      rawSort     :: Ptr RawCol -> Word8 -> 
 -- Boolean logic
 foreign import ccall "arrow_hs_log_and" rawLogAnd :: Ptr RawCol -> Ptr RawCol -> IO (Ptr RawCol)
 foreign import ccall "arrow_hs_log_or"  rawLogOr  :: Ptr RawCol -> Ptr RawCol -> IO (Ptr RawCol)
+foreign import ccall "arrow_hs_log_not" rawLogNot :: Ptr RawCol -> IO (Ptr RawCol)
 
 -- Conditional
 foreign import ccall "arrow_hs_if_else" rawIfElse :: Ptr RawCol -> Ptr RawCol -> Ptr RawCol -> IO (Ptr RawCol)
@@ -184,3 +221,37 @@ foreign import ccall "arrow_hs_val_get_uint32"  rawValGetUInt32  :: Ptr RawVal -
 foreign import ccall "arrow_hs_val_get_uint64"  rawValGetUInt64  :: Ptr RawVal -> IO Word64
 foreign import ccall "arrow_hs_val_get_float32" rawValGetFloat32 :: Ptr RawVal -> IO Float
 foreign import ccall "arrow_hs_val_get_float64" rawValGetFloat64 :: Ptr RawVal -> IO Double
+
+-- ---------------------------------------------------------------------------
+-- RecordBatch
+-- ---------------------------------------------------------------------------
+
+foreign import ccall "&arrow_hs_batch_free" rawBatchFreePtr :: FunPtr (Ptr RawBatch -> IO ())
+
+foreign import ccall "arrow_hs_batch_num_rows" rawBatchNumRows :: Ptr RawBatch -> IO Int64
+foreign import ccall "arrow_hs_batch_num_cols" rawBatchNumCols :: Ptr RawBatch -> IO Int64
+foreign import ccall "arrow_hs_batch_col"      rawBatchCol     :: Ptr RawBatch -> Int64 -> IO (Ptr RawCol)
+foreign import ccall "arrow_hs_batch_col_name" rawBatchColName :: Ptr RawBatch -> Int64 -> IO CString
+foreign import ccall "arrow_hs_batch_col_type" rawBatchColType :: Ptr RawBatch -> Int64 -> IO Word8
+foreign import ccall "arrow_hs_batch_make"     rawBatchMake
+    :: Ptr CString -> Ptr (Ptr RawCol) -> Int64 -> IO (Ptr RawBatch)
+
+-- ---------------------------------------------------------------------------
+-- Parquet
+-- ---------------------------------------------------------------------------
+
+foreign import ccall "arrow_hs_parquet_open"     rawParquetOpen     :: CString -> Int64 -> IO (Ptr RawParquetReader)
+foreign import ccall "arrow_hs_parquet_close"    rawParquetClose    :: Ptr RawParquetReader -> IO ()
+foreign import ccall "arrow_hs_parquet_num_rows" rawParquetNumRows  :: Ptr RawParquetReader -> IO Int64
+foreign import ccall "arrow_hs_parquet_num_cols" rawParquetNumCols  :: Ptr RawParquetReader -> IO CInt
+foreign import ccall "arrow_hs_parquet_col_name" rawParquetColName  :: Ptr RawParquetReader -> CInt -> IO CString
+foreign import ccall "arrow_hs_parquet_col_type" rawParquetColType  :: Ptr RawParquetReader -> CInt -> IO Word8
+foreign import ccall "arrow_hs_parquet_next_batch" rawParquetNextBatch
+    :: Ptr RawParquetReader -> Ptr (Ptr RawBatch) -> IO CInt
+
+foreign import ccall "arrow_hs_parquet_writer_open"  rawParquetWriterOpen
+    :: CString -> Ptr RawBatch -> IO (Ptr RawParquetWriter)
+foreign import ccall "arrow_hs_parquet_writer_write" rawParquetWriterWrite
+    :: Ptr RawParquetWriter -> Ptr RawBatch -> IO CInt
+foreign import ccall "arrow_hs_parquet_writer_close" rawParquetWriterClose
+    :: Ptr RawParquetWriter -> IO CInt

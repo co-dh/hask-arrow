@@ -1,8 +1,3 @@
--- | APL-like operators over Arrow columns, and literal PS.apl translations.
---
--- Demonstrates the one-to-one correspondence between APL primitives
--- and hask-arrow Col operations, following Co-dfns (Aaron Hsu, 2019).
--- PS.apl lines are shown in comments next to each translated expression.
 module Arrow.Apl
   ( -- * APL operators
     (⍴), (⌷), (⌿), (⍪), (∊), (⍀), (⍳)
@@ -25,16 +20,12 @@ module Arrow.Apl
 
 import Prelude hiding (filter, take, sum, product, concat)
 
-import Arrow.Col (Col(..), ScanFn(..), (==.), (/=.), (<.), (>.), (&&.), (||.))
+import Arrow.Col (Col(..), ScanFn(..), (==.), (/=.), (<.), (>.), (&&.), (||.), notC)
 import qualified Arrow.Col as C
 import Arrow.Dtype (Dtype(..), IsOrd)
 
 import Data.Char (ord)
 import Data.Int  (Int64)
-
--- ---------------------------------------------------------------------------
--- Helpers
--- ---------------------------------------------------------------------------
 
 cc :: Char -> Int64
 cc = fromIntegral . ord
@@ -47,15 +38,7 @@ i64 = fromIntegral
 
 -- | Bool→Int64 cast (APL's implicit boolean→integer)
 b2i :: Col 'Bool -> Col 'Int64
-b2i = C.cast 4
-
--- | Logical NOT of a boolean column (~x in APL)
-notC :: Col 'Bool -> Col 'Bool
-notC b = b2i b .= (i64 (C.len b) ⍴ 0)
-
--- ---------------------------------------------------------------------------
--- APL operators — thin aliases over Col.hs infix ops
--- ---------------------------------------------------------------------------
+b2i = C.cast Int64
 
 infixl 8 ⍴                          -- n⍴v        fill
 infixl 7 ⌷                          -- col[idx]   gather
@@ -82,7 +65,7 @@ whereM = C.where_
 
 (⍳) :: Col 'Int64 -> Col 'Int64 -> Col 'Int64                         -- ⍺⍳⍵  index-of
 a ⍳ b = C.fillNull raw (C.fillInt64 (i64 rn) (i64 n))                -- nulls → ≢⍺
-  where raw = C.cast 4 (C.indexOf a b); n = C.len a; rn = C.len raw
+  where raw = C.cast Int64 (C.indexOf a b); n = C.len a; rn = C.len raw
 
 (⍀) :: ScanFn -> Col 'Int64 -> Col 'Int64                             -- f⍀col  scan
 (⍀) = C.scan
@@ -126,10 +109,6 @@ pairFind c1 c2 x = (x .= (n ⍴ c1)) .∧ shifted                         -- (x[
         second  = x .= (n ⍴ c2)
         shifted = C.concat (C.slice second 1 (n - 1))
                            (C.mk @'Bool [Just False])
-
--- ---------------------------------------------------------------------------
--- Literal PS.apl translations (flat array operations)
--- ---------------------------------------------------------------------------
 
 -- PS.apl:89  t[⍸x∊prms]←P  (and line 47: t[⍸'⋄'=IN[pos]]←Z uses the same pattern)
 classifyPrims :: Col 'Int64 -> Col 'Int64 -> Col 'Int64 -> Int64 -> Col 'Int64
@@ -281,10 +260,7 @@ nsDepth t x m =
   where tx = t ⌷ x                                                     -- t[x]
         n  = i64 (C.len tx)
 
--- ---------------------------------------------------------------------------
 -- Co-dfns util.apl  P2D (parent→depth)
--- ---------------------------------------------------------------------------
-
 -- APL: P2D←{p←⍵  d←(≢p)⍴0  (x h)←2⍴⊂⍳≢p
 --        _←{ph←p[h] m←h≠ph x←m/x d[x]+←1 x(m/ph)}⍣{0=≢⊃⍺}(x h)  d}
 -- Note: Co-dfns roots satisfy p[i]=i; ours use p[i]=¯1, so m←ph≠¯1.

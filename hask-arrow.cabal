@@ -11,6 +11,8 @@ library
     Arrow.Col
     Arrow.Val
     Arrow.Apl
+    Arrow.Batch
+    Arrow.Parquet
   hs-source-dirs:   src
   default-language:  GHC2021
   default-extensions:
@@ -19,12 +21,14 @@ library
     TypeFamilies
     AllowAmbiguousTypes
     UndecidableInstances
+    LambdaCase
+    BangPatterns
   ghc-options:       -Wall -Wno-name-shadowing
   build-depends:
     base >= 4.16 && < 5
   cxx-sources:       ffi/arrow_hs.cpp
-  cxx-options:       -std=c++17 -O2
-  extra-libraries:   arrow_compute arrow stdc++
+  cxx-options:       -std=c++20 -O2
+  extra-libraries:   parquet arrow_compute arrow stdc++
 
 test-suite smoke
   type:              exitcode-stdio-1.0
@@ -36,4 +40,5 @@ test-suite smoke
   ghc-options:       -Wall
   build-depends:
     base >= 4.16 && < 5,
+    directory,
     hask-arrow

@@ -3,32 +3,29 @@ module Arrow.Val
   , ExtractVal(..)
   , isValid
   , toString
+  , wrapVal
   ) where
 
 import Arrow.Dtype   (Dtype(..), HostType)
-import Data.Kind     (Type)
 import Arrow.FFI
-import Foreign.ForeignPtr (ForeignPtr, withForeignPtr)
+import Control.Monad      ((<=<), (>=>))
+import Data.Kind          (Type)
+import Foreign.ForeignPtr (ForeignPtr, newForeignPtr, withForeignPtr)
 import Foreign.Ptr        (Ptr)
-import Foreign.C.String   (peekCString)
-import System.IO.Unsafe   (unsafeDupablePerformIO)
 
 type Val :: Dtype -> Type
 data Val d where
   MkVal :: ForeignPtr RawVal -> Val d
 
-pu :: IO a -> a
-pu = unsafeDupablePerformIO
+-- | Wrap a raw-pointer producer: throw on null, attach Arrow's free finalizer.
+wrapVal :: IO (Ptr RawVal) -> IO (Val d)
+wrapVal = throwIfNull >=> fmap MkVal . newForeignPtr rawValFreePtr
 
 isValid :: Val d -> Bool
-isValid (MkVal fp) = pu $ withForeignPtr fp $ \p -> (/= 0) <$> rawValIsValid p
+isValid (MkVal fp) = pu $ withForeignPtr fp $ fmap (/= 0) . rawValIsValid
 
 toString :: Val d -> String
-toString (MkVal fp) = pu $ withForeignPtr fp $ \p -> do
-    cs <- rawValToString p
-    s <- peekCString cs
-    rawStringFree cs
-    pure s
+toString (MkVal fp) = pu $ withForeignPtr fp $ peekCStringFree <=< rawValToString
 
 class ExtractVal (d :: Dtype) where
   extract :: Val d -> Maybe (HostType d)

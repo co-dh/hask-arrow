@@ -1,12 +1,16 @@
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
+#include <arrow/io/file.h>
+#include <parquet/arrow/reader.h>
+#include <parquet/arrow/writer.h>
 #include <climits>
 #include <cstring>
 #include <string>
 #include <vector>
 
-using ColPtr = std::shared_ptr<arrow::Array>;
-using ValPtr = std::shared_ptr<arrow::Scalar>;
+using ColPtr   = std::shared_ptr<arrow::Array>;
+using ValPtr   = std::shared_ptr<arrow::Scalar>;
+using BatchPtr = std::shared_ptr<arrow::RecordBatch>;
 
 // ---------------------------------------------------------------------------
 // Compute kernel registration — static constructors don't run under GHC's linker
@@ -109,8 +113,38 @@ static void* err(const std::string& msg) { g_err = msg; return nullptr; }
 // Helpers
 // ---------------------------------------------------------------------------
 
-static inline ColPtr& col(void* p) { return *static_cast<ColPtr*>(p); }
-static inline ValPtr& val(void* p) { return *static_cast<ValPtr*>(p); }
+static inline ColPtr&   col  (void* p) { return *static_cast<ColPtr*>(p); }
+static inline ValPtr&   val  (void* p) { return *static_cast<ValPtr*>(p); }
+static inline BatchPtr& batch(void* p) { return *static_cast<BatchPtr*>(p); }
+
+// Must match dtypeFromCode in src/Arrow/Dtype.hs.
+static uint8_t arrow_type_to_dtype(const arrow::DataType& t) {
+    switch (t.id()) {
+    case arrow::Type::BOOL:    return 0;
+    case arrow::Type::INT8:    return 1;
+    case arrow::Type::INT16:   return 2;
+    case arrow::Type::INT32:   return 3;
+    case arrow::Type::INT64:   return 4;
+    case arrow::Type::UINT8:   return 5;
+    case arrow::Type::UINT16:  return 6;
+    case arrow::Type::UINT32:  return 7;
+    case arrow::Type::UINT64:  return 8;
+    case arrow::Type::FLOAT:   return 9;
+    case arrow::Type::DOUBLE:  return 10;
+    case arrow::Type::STRING:  return 11;
+    default: return 255;
+    }
+}
+
+static char* schema_field_name(const arrow::Schema& s, int i) {
+    if (i < 0 || i >= s.num_fields()) return nullptr;
+    return strdup(s.field(i)->name().c_str());
+}
+
+static uint8_t schema_field_type(const arrow::Schema& s, int i) {
+    if (i < 0 || i >= s.num_fields()) return 255;
+    return arrow_type_to_dtype(*s.field(i)->type());
+}
 
 template <typename B, typename C>
 static void* mk_numeric(const C* data, const uint8_t* valid, int64_t n) {
@@ -248,8 +282,9 @@ BIN(arrow_hs_add, "add")
 BIN(arrow_hs_sub, "subtract")
 BIN(arrow_hs_mul, "multiply")
 BIN(arrow_hs_div, "divide")
-UNA(arrow_hs_neg, "negate")
-UNA(arrow_hs_abs, "abs")
+UNA(arrow_hs_neg,  "negate")
+UNA(arrow_hs_abs,  "abs")
+UNA(arrow_hs_sign, "sign")
 
 // Comparison → Col Bool
 BIN(arrow_hs_eq,  "equal")
@@ -282,6 +317,7 @@ void* arrow_hs_sort(void* p, uint8_t asc) {
 // Boolean logic
 BIN(arrow_hs_log_and, "and")
 BIN(arrow_hs_log_or,  "or")
+UNA(arrow_hs_log_not, "invert")
 
 // Conditional
 void* arrow_hs_if_else(void* cond, void* left, void* right) {
@@ -511,5 +547,121 @@ VAL_GET(arrow_hs_val_get_uint32,  arrow::UInt32Scalar,  uint32_t)
 VAL_GET(arrow_hs_val_get_uint64,  arrow::UInt64Scalar,  uint64_t)
 VAL_GET(arrow_hs_val_get_float32, arrow::FloatScalar,   float)
 VAL_GET(arrow_hs_val_get_float64, arrow::DoubleScalar,  double)
+
+// ---------------------------------------------------------------------------
+// RecordBatch
+// ---------------------------------------------------------------------------
+
+void arrow_hs_batch_free(void* p) { delete static_cast<BatchPtr*>(p); }
+
+int64_t arrow_hs_batch_num_rows(void* p) { return batch(p)->num_rows(); }
+int64_t arrow_hs_batch_num_cols(void* p) { return batch(p)->num_columns(); }
+
+void* arrow_hs_batch_col(void* p, int64_t i) {
+    auto& b = batch(p);
+    if (i < 0 || i >= b->num_columns()) return err("batch_col: index out of bounds");
+    return new ColPtr(b->column(i));
+}
+
+char*   arrow_hs_batch_col_name(void* p, int64_t i) { return schema_field_name(*batch(p)->schema(), (int)i); }
+uint8_t arrow_hs_batch_col_type(void* p, int64_t i) { return schema_field_type(*batch(p)->schema(), (int)i); }
+
+void* arrow_hs_batch_make(const char** names, void** cols, int64_t n) {
+    arrow::FieldVector fields;
+    std::vector<ColPtr> arrays;
+    fields.reserve(n);
+    arrays.reserve(n);
+    int64_t rows = 0;
+    for (int64_t i = 0; i < n; i++) {
+        auto& a = col(cols[i]);
+        fields.push_back(arrow::field(names[i], a->type()));
+        arrays.push_back(a);
+        if (i == 0) rows = a->length();
+        else if (a->length() != rows) return err("batch_make: column length mismatch");
+    }
+    return new BatchPtr(arrow::RecordBatch::Make(arrow::schema(fields), rows, arrays));
+}
+
+// ---------------------------------------------------------------------------
+// Parquet reader (streaming)
+// ---------------------------------------------------------------------------
+
+struct HsParquetReader {
+    std::unique_ptr<parquet::arrow::FileReader> file_reader;
+    std::shared_ptr<arrow::RecordBatchReader>   batch_reader;
+    std::shared_ptr<arrow::Schema>              schema;
+};
+
+void* arrow_hs_parquet_open(const char* path, int64_t batch_size) {
+    TRY(input, arrow::io::ReadableFile::Open(path));
+    TRY(fr,    parquet::arrow::OpenFile(input, arrow::default_memory_pool()));
+
+    if (batch_size > 0) fr->set_batch_size(batch_size);
+
+    std::shared_ptr<arrow::Schema> schema;
+    auto st = fr->GetSchema(&schema);
+    if (!st.ok()) return err(st.message());
+
+    TRY(br, fr->GetRecordBatchReader());
+    std::shared_ptr<arrow::RecordBatchReader> br_shared = std::move(br);
+
+    return new HsParquetReader{std::move(fr), std::move(br_shared), std::move(schema)};
+}
+
+void arrow_hs_parquet_close(void* p) { delete static_cast<HsParquetReader*>(p); }
+
+int64_t arrow_hs_parquet_num_rows(void* p) {
+    return static_cast<HsParquetReader*>(p)->file_reader->parquet_reader()->metadata()->num_rows();
+}
+int arrow_hs_parquet_num_cols(void* p) { return static_cast<HsParquetReader*>(p)->schema->num_fields(); }
+
+char*   arrow_hs_parquet_col_name(void* p, int i) { return schema_field_name(*static_cast<HsParquetReader*>(p)->schema, i); }
+uint8_t arrow_hs_parquet_col_type(void* p, int i) { return schema_field_type(*static_cast<HsParquetReader*>(p)->schema, i); }
+
+// Returns 0 = ok (*out=batch), 1 = EOF (*out=null), -1 = error (g_err set).
+int arrow_hs_parquet_next_batch(void* p, void** out_batch) {
+    auto* pr = static_cast<HsParquetReader*>(p);
+    std::shared_ptr<arrow::RecordBatch> b;
+    auto st = pr->batch_reader->ReadNext(&b);
+    if (!st.ok()) { g_err = st.message(); *out_batch = nullptr; return -1; }
+    if (!b)       {                        *out_batch = nullptr; return  1; }
+    *out_batch = new BatchPtr(b);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Parquet writer
+// ---------------------------------------------------------------------------
+
+struct HsParquetWriter {
+    std::shared_ptr<arrow::io::FileOutputStream> out;
+    std::unique_ptr<parquet::arrow::FileWriter>  writer;
+};
+
+void* arrow_hs_parquet_writer_open(const char* path, void* schema_batch) {
+    TRY(out, arrow::io::FileOutputStream::Open(path));
+    auto& bp = batch(schema_batch);
+    TRY(writer, parquet::arrow::FileWriter::Open(
+        *bp->schema(), arrow::default_memory_pool(), out,
+        parquet::default_writer_properties(),
+        parquet::default_arrow_writer_properties()));
+    return new HsParquetWriter{out, std::move(writer)};
+}
+
+// Returns 0 on success, -1 on error.
+int arrow_hs_parquet_writer_write(void* w, void* b) {
+    auto* pw = static_cast<HsParquetWriter*>(w);
+    auto st = pw->writer->WriteRecordBatch(*batch(b));
+    if (!st.ok()) { g_err = st.message(); return -1; }
+    return 0;
+}
+
+int arrow_hs_parquet_writer_close(void* w) {
+    auto* pw = static_cast<HsParquetWriter*>(w);
+    auto st = pw->writer->Close();       if (!st.ok())  { g_err = st.message();  delete pw; return -1; }
+    auto st2 = pw->out->Close();         if (!st2.ok()) { g_err = st2.message(); delete pw; return -1; }
+    delete pw;
+    return 0;
+}
 
 } // extern "C"
