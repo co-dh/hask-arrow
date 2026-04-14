@@ -1,8 +1,3 @@
--- | APL-like operators over Arrow columns, and literal PS.apl translations.
---
--- Demonstrates the one-to-one correspondence between APL primitives
--- and hask-arrow Col operations, following Co-dfns (Aaron Hsu, 2019).
--- PS.apl lines are shown in comments next to each translated expression.
 module Arrow.Apl
   ( -- * APL operators
     (⍴), (⌷), (⌿), (⍪), (∊), (⍀), (⍳)
@@ -43,7 +38,7 @@ i64 = fromIntegral
 
 -- | Bool→Int64 cast (APL's implicit boolean→integer)
 b2i :: Col 'Bool -> Col 'Int64
-b2i = C.cast 4
+b2i = C.cast Int64
 
 infixl 8 ⍴                          -- n⍴v        fill
 infixl 7 ⌷                          -- col[idx]   gather
@@ -70,7 +65,7 @@ whereM = C.where_
 
 (⍳) :: Col 'Int64 -> Col 'Int64 -> Col 'Int64                         -- ⍺⍳⍵  index-of
 a ⍳ b = C.fillNull raw (C.fillInt64 (i64 rn) (i64 n))                -- nulls → ≢⍺
-  where raw = C.cast 4 (C.indexOf a b); n = C.len a; rn = C.len raw
+  where raw = C.cast Int64 (C.indexOf a b); n = C.len a; rn = C.len raw
 
 (⍀) :: ScanFn -> Col 'Int64 -> Col 'Int64                             -- f⍀col  scan
 (⍀) = C.scan

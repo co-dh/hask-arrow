@@ -19,7 +19,7 @@ import Arrow.Dtype  (Dtype, dtypeFromCodeOrThrow)
 import Arrow.FFI
 
 import Control.Exception    (bracket)
-import Control.Monad        (unless, (>=>))
+import Control.Monad        ((>=>))
 import Data.Foldable        (traverse_)
 import Data.Int             (Int64)
 import Data.List.NonEmpty   (NonEmpty(..))
@@ -30,8 +30,7 @@ import Foreign.Storable     (peek)
 
 newtype Reader = MkReader (Ptr RawParquetReader)
 
--- | Open a Parquet file. @batchSize@ is the target number of rows per
--- emitted 'Batch' (0 = Arrow's default).
+-- | @batchSize@: target rows per emitted 'Batch' (0 = Arrow default).
 open :: FilePath -> Int64 -> IO Reader
 open path batchSize = withCString path $ \cs ->
     MkReader <$> throwIfNull (rawParquetOpen cs batchSize)
@@ -54,7 +53,6 @@ colName (MkReader p) i = peekCStringFree =<< rawParquetColName p (fromIntegral i
 colDtype :: Reader -> Int -> IO Dtype
 colDtype (MkReader p) i = dtypeFromCodeOrThrow =<< rawParquetColType p (fromIntegral i)
 
--- | Fetch the next batch, or 'Nothing' at end-of-stream.
 nextBatch :: Reader -> IO (Maybe Batch)
 nextBatch (MkReader p) = alloca $ \outPtr -> do
     st <- rawParquetNextBatch p outPtr
@@ -63,38 +61,32 @@ nextBatch (MkReader p) = alloca $ \outPtr -> do
         1 -> pure Nothing
         _ -> throwLastError
 
--- | Consume the reader to the end, folding each batch into an accumulator.
--- Bounded memory — the previous batch becomes garbage after @f@ returns.
+-- | Bounded memory — each batch becomes garbage after @f@ returns.
 foldBatches :: Reader -> a -> (a -> Batch -> IO a) -> IO a
 foldBatches r z f = go z
   where
     go !acc = nextBatch r >>= maybe (pure acc) (f acc >=> go)
 
--- | Collect all batches into a list. Unbounded memory — prefer 'foldBatches'
--- on real data; this exists for tests and small files.
+-- | Unbounded memory — tests and small files only; use 'foldBatches' otherwise.
 readAll :: Reader -> IO [Batch]
 readAll r = reverse <$> foldBatches r [] (\acc b -> pure (b : acc))
 
 newtype Writer = MkWriter (Ptr RawParquetWriter)
 
--- | Open a writer. The schema is taken from the sample batch; all batches
--- passed to 'writerWrite' must share that schema.
+-- | Schema is taken from the sample batch; all subsequent batches must match.
 writerOpen :: FilePath -> Batch -> IO Writer
 writerOpen path b = withCString path $ \cs ->
     withBatchPtr b $ \bp ->
         MkWriter <$> throwIfNull (rawParquetWriterOpen cs bp)
 
 writerWrite :: Writer -> Batch -> IO ()
-writerWrite (MkWriter w) b = withBatchPtr b $ \bp ->
-    rawParquetWriterWrite w bp >>= \st -> unless (st == 0) throwLastError
+writerWrite (MkWriter w) b = withBatchPtr b $ checkStatus . rawParquetWriterWrite w
 
 writerClose :: Writer -> IO ()
-writerClose (MkWriter w) =
-    rawParquetWriterClose w >>= \st -> unless (st == 0) throwLastError
+writerClose (MkWriter w) = checkStatus (rawParquetWriterClose w)
 
 withWriter :: FilePath -> Batch -> (Writer -> IO a) -> IO a
 withWriter path schema = bracket (writerOpen path schema) writerClose
 
--- | Write all batches in order. The first batch supplies the schema.
 writeBatches :: FilePath -> NonEmpty Batch -> IO ()
 writeBatches path bs@(b :| _) = withWriter path b $ \w -> traverse_ (writerWrite w) bs

@@ -5,7 +5,7 @@ module Arrow.Dtype
   , IsOrd
   , IsIntegral
   , IsFloat
-  , dtypeFromCode
+  , dtypeFromCode, dtypeCode
   , dtypeFromCodeOrThrow
   ) where
 
@@ -101,6 +101,22 @@ dtypeFromCode 9  = Just Float32
 dtypeFromCode 10 = Just Float64
 dtypeFromCode 11 = Just Utf8
 dtypeFromCode _  = Nothing
+
+dtypeCode :: Dtype -> Word8
+dtypeCode Bool    = 0
+dtypeCode Int8    = 1
+dtypeCode Int16   = 2
+dtypeCode Int32   = 3
+dtypeCode Int64   = 4
+dtypeCode UInt8   = 5
+dtypeCode UInt16  = 6
+dtypeCode UInt32  = 7
+dtypeCode UInt64  = 8
+dtypeCode Float32 = 9
+dtypeCode Float64 = 10
+dtypeCode Utf8    = 11
+dtypeCode Date32  = error "dtypeCode: Date32 not wired in FFI"
+dtypeCode Date64  = error "dtypeCode: Date64 not wired in FFI"
 
 dtypeFromCodeOrThrow :: Word8 -> IO Dtype
 dtypeFromCodeOrThrow c = case dtypeFromCode c of

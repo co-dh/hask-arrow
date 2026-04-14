@@ -1,7 +1,7 @@
 module Arrow.FFI
   ( RawCol, RawVal, RawBatch, RawParquetReader, RawParquetWriter
   , ArrowError(..)
-  , throwIfNull, throwLastError
+  , throwIfNull, throwLastError, checkStatus
   , pu, peekCStringFree
   -- * Lifecycle
   , rawColFreePtr, rawValFreePtr, rawStringFree
@@ -49,6 +49,7 @@ module Arrow.FFI
   ) where
 
 import Control.Exception (Exception, throwIO)
+import Control.Monad     (unless)
 import Data.Int          (Int8, Int16, Int32, Int64)
 import Data.Word         (Word8, Word16, Word32, Word64)
 import Foreign.C.String  (CString, peekCString)
@@ -79,6 +80,9 @@ throwLastError :: IO a
 throwLastError = do
     msg <- peekCString =<< rawLastError
     throwIO (ArrowError msg)
+
+checkStatus :: IO CInt -> IO ()
+checkStatus act = act >>= \st -> unless (st == 0) throwLastError
 
 -- | Arrow kernels are referentially transparent (immutable in, new array
 -- out); IO is just FFI ceremony. Wrap computations with this to expose a

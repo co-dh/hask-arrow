@@ -234,8 +234,8 @@ isIn = bin rawIsIn
 indexOf :: Col d -> Col d -> Col 'Int32
 indexOf = bin rawIndexOf
 
-cast :: Word8 -> Col d -> Col e
-cast target (MkCol fp) = pu $ withForeignPtr fp $ \p -> wrapCol (rawCast p target)
+cast :: Dtype -> Col d -> Col e
+cast target (MkCol fp) = pu $ withForeignPtr fp $ \p -> wrapCol (rawCast p (dtypeCode target))
 
 slice :: Col d -> Int64 -> Int64 -> Col d
 slice (MkCol fp) off n = pu $ withForeignPtr fp $ \p -> wrapCol (rawSlice p off n)
